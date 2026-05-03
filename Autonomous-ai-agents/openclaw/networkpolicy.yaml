@@ -1,0 +1,64 @@
+---
+# =============================================================================
+# Openclaw — NetworkPolicy egress allowlist
+# =============================================================================
+# The public VirtualService and the JWT-required AuthorizationPolicy that
+# previously lived in this file have moved to:
+#   kubernetes-addons/0-boostrap/oauth2-proxy/overlays/openclaw/
+# That overlay now owns the public hostname and the auth gate
+# (oauth2-proxy + Keycloak realm `openclaw`).
+#
+# This file keeps ONLY the egress NetworkPolicy — restricts which
+# external services openclaw pods can reach.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-egress
+  namespace: agents-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+    ports:
+    - port: 15010
+    - port: 15012
+    - port: 15014
+    - port: 15017
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ollama
+    ports:
+    - port: 11434
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - port: 443
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: vault
+    ports:
+    - port: 8200
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: autonomous-ai-agents

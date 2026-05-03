@@ -1,0 +1,10 @@
+# NemoClaw agent Python dependencies
+agentscope>=0.1.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+httpx>=0.27.0
+duckduckgo-search>=6.2.0
+prometheus-client>=0.20.0
+python-multipart>=0.0.9
+anyio>=4.4.0

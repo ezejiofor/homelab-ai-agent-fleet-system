@@ -1,0 +1,214 @@
+---
+# ============================================================================
+# Mirror of upstream openclaw/scripts/k8s/manifests/deployment.yaml with
+# minimal homelab adjustments:
+#   • metadata.namespace handled by kustomize (agents-system)
+#   • container/PVC/configmap names align with upstream
+#   • storageClassName comes via PVC (ceph-block)
+#   • Istio sidecar handles inbound port 18789; HTTP probes hit upstream's
+#     /healthz and /readyz (Node http.get from inside the container, so the
+#     loopback-only listener is fine for liveness even when bind=lan).
+# https://github.com/openclaw/openclaw/blob/main/scripts/k8s/manifests/deployment.yaml
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw
+  labels:
+    app.kubernetes.io/name: openclaw
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/part-of: autonomous-ai-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw
+  strategy:
+    type: Recreate   # single replica with RWO PVC
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openclaw
+        app.kubernetes.io/version: "1.0.0"
+      annotations:
+        # ── Secrets source (Phase 0) ────────────────────────────────────────
+        # Real values land via:
+        #   kubectl -n agents-system create secret generic openclaw-secrets \
+        #     --from-literal=OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32) \
+        #     --from-literal=OPENAI_API_KEY=sk-... \
+        #     --dry-run=client -o yaml | kubectl apply -f -
+        # Phase 1 (later): Vault Agent injection — see comments in earlier
+        # commits or _shared/ for the annotation set.
+        # ── Prometheus metrics scraping ─────────────────────────────────────
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "18789"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: openclaw
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      nodeSelector:
+        nodepool: app
+
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw
+
+      initContainers:
+        # Copy openclaw.json + AGENTS.md from the ConfigMap into the PVC
+        # (the gateway expects them under $HOME/.openclaw, and the root
+        # filesystem is read-only at runtime).
+        - name: init-config
+          image: busybox:1.37
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              cp /config/openclaw.json /home/node/.openclaw/openclaw.json
+              # OpenClaw maintains a meta-checksum in openclaw.json.last-good
+              # and will silently revert openclaw.json to that backup when our
+              # cm-pushed copy "looks tampered with" (missing-meta-vs-last-good).
+              # Drop the rollback files so the cm value actually sticks. The
+              # gateway regenerates them on next config write.
+              rm -f /home/node/.openclaw/openclaw.json.last-good \
+                    /home/node/.openclaw/openclaw.json.bak
+              mkdir -p /home/node/.openclaw/workspace
+              cp /config/AGENTS.md /home/node/.openclaw/workspace/AGENTS.md
+              # Pre-seed IDENTITY.md and USER.md so OpenClaw skips the
+              # first-message bootstrap handshake on every fresh pod.
+              # Seed when the target is missing, empty, or still contains
+              # OpenClaw's "_Fill this in..." placeholder text. Real edits
+              # OpenClaw makes via its memory tool will not match the
+              # placeholder pattern and are preserved.
+              for name in IDENTITY.md USER.md; do
+                target="/home/node/.openclaw/workspace/$name"
+                src="/config/$name"
+                [ -f "$src" ] || continue
+                if [ ! -s "$target" ] || grep -q "Fill this in during your first conversation" "$target" 2>/dev/null || grep -q "Learn about the person you're helping" "$target" 2>/dev/null; then
+                  cp "$src" "$target"
+                fi
+              done
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          resources:
+            requests: { memory: 32Mi, cpu: 50m }
+            limits:   { memory: 64Mi, cpu: 100m }
+          volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/node/.openclaw
+            - name: config
+              mountPath: /config
+
+      containers:
+        - name: gateway
+          # Pinned to 2026.4.27 — the LAST known-good stable.
+          # ⚠️  v2026.4.29 (current `:latest`) is broken per
+          #     reddit.com/r/openclaw — "It took 3 minutes to say hi with
+          #     v2026.4.29" / "developers blew another release"
+          # NOTE: GHCR tag scheme has NO `v` prefix (matches release tags
+          # without the leading v). Verify available tags:
+          #   curl -sL "https://ghcr.io/token?scope=repository:openclaw/openclaw:pull&service=ghcr.io" | jq -r .token | xargs -I{} curl -sH "Authorization: Bearer {}" "https://ghcr.io/v2/openclaw/openclaw/tags/list?n=2000" | jq -r '.tags[]' | grep -E '^2026'
+          # Release notes: https://github.com/openclaw/openclaw/releases
+          image: ghcr.io/openclaw/openclaw:2026.4.27
+          imagePullPolicy: IfNotPresent
+          command:
+            - node
+            - /app/dist/index.js
+            - gateway
+            - run
+
+          ports:
+            - name: gateway
+              containerPort: 18789
+              protocol: TCP
+
+          env:
+            - name: HOME
+              value: /home/node
+            - name: OPENCLAW_CONFIG_DIR
+              value: /home/node/.openclaw
+            - name: NODE_ENV
+              value: production
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: OPENCLAW_GATEWAY_TOKEN
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: { name: openclaw-secrets, key: ANTHROPIC_API_KEY, optional: true }
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: openclaw-secrets, key: OPENAI_API_KEY, optional: true }
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: openclaw-secrets, key: GEMINI_API_KEY, optional: true }
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef: { name: openclaw-secrets, key: GOOGLE_API_KEY, optional: true }
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef: { name: openclaw-secrets, key: OPENROUTER_API_KEY, optional: true }
+
+          resources:
+            # Upstream sets 2Gi limit. The slim image stages 42 bundled npm
+            # deps under ~/.openclaw on first start which spikes RSS — 2Gi
+            # hit OOMKilled. 4Gi has steady-state headroom on top.
+            requests: { memory: 1Gi, cpu: 250m }
+            limits:   { memory: 4Gi, cpu: "1" }
+
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "require('http').get('http://127.0.0.1:18789/healthz', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "require('http').get('http://127.0.0.1:18789/readyz', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1))"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+
+          volumeMounts:
+            - name: openclaw-home
+              mountPath: /home/node/.openclaw
+            - name: tmp-volume
+              mountPath: /tmp
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: openclaw-home
+          persistentVolumeClaim:
+            claimName: openclaw-home-pvc
+        - name: config
+          configMap:
+            name: openclaw-config
+        - name: tmp-volume
+          emptyDir: {}
+
+      terminationGracePeriodSeconds: 60

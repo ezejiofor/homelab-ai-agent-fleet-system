@@ -1,0 +1,31 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hiclaw
+  namespace: hiclaw
+  labels:
+    app.kubernetes.io/name: hiclaw
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hiclaw
+  namespace: hiclaw
+  labels:
+    app.kubernetes.io/name: hiclaw
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hiclaw
+subjects:
+  - kind: ServiceAccount
+    name: hiclaw
+    namespace: hiclaw

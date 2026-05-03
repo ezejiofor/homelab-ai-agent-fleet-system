@@ -1,0 +1,21 @@
+---
+# Open WebUI — chat frontend for the agent fleet (Hermes via OpenAI-compat API).
+# Edge access: https://open-webui.georgehomelab.com (gated by oauth2-proxy + Keycloak).
+# Internal upstream: http://hermes.agents-system.svc.cluster.local:9120/v1
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agents-system
+
+resources:
+  - serviceaccount.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: open-webui
+      app.kubernetes.io/part-of: agent-fleet-system
+      app.kubernetes.io/managed-by: kustomize

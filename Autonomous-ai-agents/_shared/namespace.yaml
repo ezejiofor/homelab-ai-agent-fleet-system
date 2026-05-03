@@ -1,0 +1,31 @@
+---
+# ============================================================================
+# agents-system — single shared namespace for all autonomous AI agent fleets
+# ============================================================================
+# All fleet members (openclaw, hermes, openshell, …) deploy INTO this one
+# namespace. Resource-name uniqueness across fleets is what keeps them from
+# colliding (Deployment/openclaw, Deployment/hermes, …).
+#
+# Why one namespace, not per-fleet:
+#   • Shared RWX skills PVC, shared Vault role, shared NetworkPolicy template
+#   • One Istio sidecar config, one PodSecurity policy, one set of OPA gates
+#   • ApplicationSet still differentiates fleets via labels + sync waves
+#
+# PodSecurity:
+#   privileged on all three modes — istio-init needs NET_ADMIN/NET_RAW for
+#   sidecar iptables (forbidden by `restricted` and `baseline`). Mirrors the
+#   istio-system / istio-injected namespaces convention used elsewhere in
+#   this cluster (see istio-service-mesh/namespace.yaml).
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agents-system
+  labels:
+    app.kubernetes.io/part-of: autonomous-ai-agents
+    app.kubernetes.io/managed-by: kustomize
+    istio-injection: enabled
+    vault.hashicorp.com/agent-inject: "true"
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

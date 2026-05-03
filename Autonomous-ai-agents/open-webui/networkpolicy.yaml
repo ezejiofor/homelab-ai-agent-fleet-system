@@ -1,0 +1,58 @@
+---
+# =============================================================================
+# Egress allowlist for open-webui:
+#   - hermes:9120 (OpenAI-compat chat backend)
+#   - DNS (kube-system:53)
+#   - HTTPS to internet (model auth/discovery probes, optional update checks)
+# Inbound connections are constrained by the namespace-wide default-deny
+# baseline plus the oauth2-proxy/-overlay's allow-istio-ingressgateway rule.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: open-webui-egress
+  namespace: agents-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: open-webui
+  policyTypes: ["Egress"]
+  egress:
+    # Hermes API server
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hermes
+      ports:
+        - { protocol: TCP, port: 9120 }
+
+    # OpenClaw OpenAI-compat /v1 endpoint (same port as the Control UI)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw
+      ports:
+        - { protocol: TCP, port: 18789 }
+
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+
+    # Istio control plane — istiod CSR signing (15012) + xDS (15010, 15014)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - { protocol: TCP, port: 15012 }
+        - { protocol: TCP, port: 15010 }
+        - { protocol: TCP, port: 15014 }
+
+    # HTTPS — Open WebUI may probe model providers / update endpoints
+    - ports:
+        - { protocol: TCP, port: 443 }

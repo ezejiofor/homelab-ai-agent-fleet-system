@@ -1,0 +1,24 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# All fleet members live in `agents-system`; the namespace is owned by ../_shared.
+namespace: agents-system
+
+resources:
+  - serviceaccount.yaml
+  - rbac.yaml
+  - pvc.yaml
+  - configmap.yaml
+  - secret.yaml
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+  - networkpolicy.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: openclaw
+      app.kubernetes.io/part-of: autonomous-ai-agents
+      app.kubernetes.io/managed-by: kustomize
+

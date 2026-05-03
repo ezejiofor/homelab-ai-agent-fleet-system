@@ -1,0 +1,189 @@
+---
+apiVersion: apps-example/v1
+kind: Deployment
+metadata:
+  name: reme
+  namespace: reme
+  labels:
+    app.kubernetes.io/name: reme
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/part-of: autonomous-ai-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reme
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: reme
+        app.kubernetes.io/version: "0.1.0"
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "reme"
+        vault.hashicorp.com/agent-inject-secret-env: "secret/homelab/ai/reme"
+        vault.hashicorp.com/agent-inject-template-env: |
+          {{- with secret "secret/homelab/ai/reme" -}}
+          export AGENT_API_KEY="{{ .Data.data.agent_api_key }}"
+          export QDRANT_API_KEY="{{ .Data.data.qdrant_api_key }}"
+          {{- end }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: reme
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        nodepool: app
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: reme
+      initContainers:
+        # Wait for Qdrant to be ready before starting the agent
+        - name: wait-for-qdrant
+          image: curlimages/curl:8.7.1
+          command:
+            - sh
+            - -c
+            - |
+              echo "[reme] Waiting for Qdrant at qdrant.reme.svc.cluster.local:6333..."
+              MAX=60
+              WAITED=0
+              until curl -sf http://qdrant.reme.svc.cluster.local:6333/readyz > /dev/null; do
+                sleep 3
+                WAITED=$((WAITED + 3))
+                if [ "$WAITED" -ge "$MAX" ]; then
+                  echo "[reme] WARNING: Qdrant not ready after ${MAX}s, continuing anyway"
+                  break
+                fi
+              done
+              echo "[reme] Qdrant ready (or timeout reached)"
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+        - name: init-workspace
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /workspace/memory /workspace/logs /workspace/agentscope_runs /workspace/exports
+              echo "ReMe workspace ready"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      containers:
+        - name: reme
+          image: ghcr.io/georgehenderson/reme:latest
+          imagePullPolicy: Always
+          ports:
+            - name: api
+              containerPort: 8000
+              protocol: TCP
+            - name: studio
+              containerPort: 5000
+              protocol: TCP
+            - name: agent-rpc
+              containerPort: 12010
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: reme-config
+            - secretRef:
+                name: reme-secrets
+          env:
+            - name: VAULT_SECRETS_FILE
+              value: "/vault/secrets/env"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 18
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: reme-workspace
+        - name: config
+          configMap:
+            name: reme-config
+            items:
+              - key: model_config.json
+                path: model_config.json
+              - key: system_prompt.txt
+                path: system_prompt.txt
+      terminationGracePeriodSeconds: 60

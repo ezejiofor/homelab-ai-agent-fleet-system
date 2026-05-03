@@ -1,0 +1,283 @@
+---
+# Hermes Agent — direct port of the upstream docker-compose.yml
+# (https://raw.githubusercontent.com/NousResearch/hermes-agent/main/docker-compose.yml)
+#
+# Compose translation:
+#   services.gateway   → container `gateway`   (command: ["gateway", "run"])
+#   services.dashboard → container `dashboard` (command: ["dashboard", "--host", "0.0.0.0", "--no-open"])
+#   network_mode: host → Pod-shared network namespace (both containers share localhost)
+#   ~/.hermes:/opt/data → PVC `hermes-data` mounted at /opt/data in BOTH containers
+#   HERMES_UID/HERMES_GID → from ConfigMap, consumed by upstream entrypoint (usermod + gosu)
+#   depends_on: [gateway] → kubelet starts containers in spec order; gateway is listed first
+#
+# Notes vs. compose:
+#   - compose binds dashboard to 127.0.0.1; here we bind 0.0.0.0 inside the
+#     pod and front it with Istio + AuthorizationPolicy. Do NOT expose without auth.
+#   - Single replica only — RWO PVC and stateful agent memory.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/part-of: autonomous-ai-agents
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hermes
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hermes
+        app.kubernetes.io/version: "latest"
+      annotations:
+        # ── Secrets source ──────────────────────────────────────────────────
+        # Phase 0: env vars come from Secret/hermes-secrets via envFrom.
+        # Populate real values with:
+        #   kubectl -n agents-system create secret generic hermes-secrets \
+        #     --from-literal=OPENROUTER_API_KEY=... \
+        #     --from-literal=ANTHROPIC_API_KEY=... \
+        #     --from-literal=TELEGRAM_BOT_TOKEN=... \
+        #     ... (etc) \
+        #     --dry-run=client -o yaml | kubectl apply -f -
+        # Phase 1 (later): swap to Vault Agent injection — see openclaw
+        # deployment for the annotation set, then create the matching
+        # Vault role + KV secret + policy.
+    spec:
+      serviceAccountName: hermes
+      # Upstream image runs as root initially so the entrypoint can usermod
+      # the `hermes` user to HERMES_UID/HERMES_GID, then drops privileges
+      # via gosu. Setting fsGroup ensures PVC is writable post-drop.
+      securityContext:
+        fsGroup: 10000
+
+      nodeSelector:
+        nodepool: app
+
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: hermes
+
+      initContainers:
+        # Seed /opt/data/.env (the Hermes Keys page source-of-truth) with the
+        # Vault-managed values from Secret/hermes-secrets. Hermes reads env
+        # vars at runtime, but its UI only shows "Set" when keys are in this
+        # file. Idempotent: only sets values that aren't already present.
+        - name: seed-env
+          image: busybox:1.37
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              ENV_FILE=/opt/data/.env
+              touch "$ENV_FILE"
+              chmod 600 "$ENV_FILE"
+              for key in GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY NOUS_PORTAL_API_KEY TELEGRAM_BOT_TOKEN DISCORD_BOT_TOKEN SLACK_BOT_TOKEN ELEVENLABS_API_KEY API_SERVER_KEY; do
+                val=$(printenv "$key" || true)
+                [ -z "$val" ] && continue
+                # Skip placeholder values
+                case "$val" in REPLACE-*|CHANGE-*|"") continue ;; esac
+                if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+                  continue
+                fi
+                printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
+              done
+
+              # Seed SOUL.md (agent persona) from the configmap on first run.
+              # Hermes loads it fresh per turn, so user edits via the UI or
+              # `kubectl exec` survive — only seed if the file is empty/missing.
+              SOUL_FILE=/opt/data/SOUL.md
+              if [ ! -s "$SOUL_FILE" ] || ! grep -q "^You are \*\*Hermes\*\*" "$SOUL_FILE" 2>/dev/null; then
+                if [ -f /soul/SOUL.md ]; then
+                  cp /soul/SOUL.md "$SOUL_FILE"
+                  chmod 644 "$SOUL_FILE"
+                fi
+              fi
+
+              # Pin the default model to gemini-flash-latest. The Gemini
+              # free tier explicitly lists 0 quota for our key on stable
+              # gemini-2.5-flash-lite and gemini-2.0-flash, but the
+              # `gemini-flash-latest` alias (currently → gemini-3-flash-preview)
+              # is free-tier accessible. If Google rotates the alias to a
+              # stable model later, this auto-tracks. Idempotent: only
+              # rewrites when the file still has an old default we set
+              # ourselves; user edits to other model fields are preserved.
+              CFG=/opt/data/config.yaml
+              if [ -f "$CFG" ]; then
+                for stale in gemini-2.5-flash-lite gemini-2.0-flash; do
+                  if grep -qE "^[[:space:]]*default:[[:space:]]*${stale}\$" "$CFG" 2>/dev/null; then
+                    sed -i "s/^\([[:space:]]*default:[[:space:]]*\)${stale}\$/\1gemini-flash-latest/" "$CFG"
+                    echo "Patched $CFG: model.default ${stale} → gemini-flash-latest"
+                  fi
+                done
+                # Reduce reasoning effort to cut Gemini API calls per turn.
+                # Free tier has ~10 requests/minute and agent loops burn
+                # through that quickly when thinking is medium/high.
+                if grep -qE "^[[:space:]]*reasoning_effort:[[:space:]]*medium" "$CFG" 2>/dev/null; then
+                  sed -i "s/^\([[:space:]]*reasoning_effort:[[:space:]]*\)medium\$/\1low/" "$CFG"
+                  echo "Patched $CFG: agent.reasoning_effort medium → low"
+                fi
+              fi
+          envFrom:
+            - secretRef:
+                name: hermes-secrets
+          securityContext:
+            runAsUser: 10000
+            runAsGroup: 10000
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+            - name: soul
+              mountPath: /soul
+              readOnly: true
+
+      containers:
+        # ── gateway: messaging + agent loop (compose `gateway` service) ─────
+        - name: gateway
+          # Pinned to v2026.4.30 (Hermes Agent v0.12.0 "Curator release") —
+          # reviewed against Docker Hub multi-arch listing:
+          #   https://hub.docker.com/layers/nousresearch/hermes-agent/v2026.4.30
+          # Release notes:
+          #   https://github.com/NousResearch/Hermes-Agent/releases/tag/v2026.4.30
+          # Bump after each release once you've reviewed the changelog.
+          # Both gateway + dashboard containers MUST share the same tag —
+          # protocol mismatch between the two breaks the UI.
+          image: docker.io/nousresearch/hermes-agent:v2026.4.30
+          imagePullPolicy: IfNotPresent
+          # Use `args:` (NOT `command:`) — the upstream image has an
+          # ENTRYPOINT (docker/entrypoint.sh) that handles usermod / gosu
+          # and PATH setup. Overriding `command:` skips entrypoint and the
+          # `gateway` binary won't be on PATH.
+          args: ["gateway", "run"]
+
+          envFrom:
+            - configMapRef:
+                name: hermes-config
+            - secretRef:
+                name: hermes-secrets
+
+          ports:
+            - name: api
+              containerPort: 9120
+              protocol: TCP
+
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+
+          # No HTTP healthcheck on gateway by default — use process probe.
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "gateway run"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          startupProbe:
+            exec:
+              command: ["pgrep", "-f", "gateway run"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30  # ~5 minutes for first-boot setup wizard
+
+          securityContext:
+            # Must start as root for entrypoint usermod/gosu logic.
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "SETUID", "SETGID"]  # required by gosu/usermod
+
+        # ── dashboard: web UI on :9119 (compose `dashboard` service) ────────
+        - name: dashboard
+          # Same pinned version as the gateway container — both come from the
+          # same upstream image; mismatch causes UI ↔ gateway protocol drift.
+          image: docker.io/nousresearch/hermes-agent:v2026.4.30
+          imagePullPolicy: IfNotPresent
+          # Compose: ["dashboard", "--host", "127.0.0.1", "--no-open"]
+          # Pod-internal: bind 0.0.0.0 so the Service can reach it; external
+          # access still gated by Istio AuthorizationPolicy + Keycloak SSO.
+          # Use `args:` so the image's ENTRYPOINT runs (binaries on PATH).
+          # `--insecure` disables localhost-only check (per upstream docs).
+          args: ["dashboard", "--host", "0.0.0.0", "--insecure"]
+
+          ports:
+            - name: dashboard
+              containerPort: 9119
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: hermes-config
+            - secretRef:
+                name: hermes-secrets
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+
+          readinessProbe:
+            tcpSocket:
+              port: 9119
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          livenessProbe:
+            tcpSocket:
+              port: 9119
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          securityContext:
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "SETUID", "SETGID"]
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hermes-data
+        - name: soul
+          configMap:
+            name: hermes-soul
+            items:
+              - key: SOUL.md
+                path: SOUL.md
+
+      terminationGracePeriodSeconds: 60

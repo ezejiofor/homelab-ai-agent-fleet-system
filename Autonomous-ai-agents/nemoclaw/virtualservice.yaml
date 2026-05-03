@@ -1,0 +1,163 @@
+---
+# Istio VirtualService — routes nemoclaw.georgehomelab.com to the agent API
+# Studio UI on /studio/, REST API on /api/ and /health
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: nemoclaw
+  namespace: nemoclaw
+  labels:
+    app.kubernetes.io/name: nemoclaw
+    app.kubernetes.io/part-of: autonomous-ai-agents
+spec:
+  hosts:
+    - nemoclaw.georgehomelab.com
+  gateways:
+    - istio-system/homelab-gateway
+  http:
+    - name: studio
+      match:
+        - uri:
+            prefix: /
+          headers:
+            upgrade:
+              exact: websocket
+      route:
+        - destination:
+            host: nemoclaw
+            port:
+              number: 5000
+    - name: api
+      match:
+        - uri:
+            prefix: /api/
+        - uri:
+            prefix: /health
+        - uri:
+            prefix: /ready
+        - uri:
+            prefix: /metrics
+      route:
+        - destination:
+            host: nemoclaw
+            port:
+              number: 8000
+    - name: studio-default
+      match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: nemoclaw
+            port:
+              number: 5000
+---
+# AuthorizationPolicy — require X-API-Key header on all /api/* routes
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: nemoclaw-api-auth
+  namespace: nemoclaw
+  labels:
+    app.kubernetes.io/name: nemoclaw
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nemoclaw
+  action: ALLOW
+  rules:
+    # Allow health + metrics without auth (Prometheus scraping)
+    - to:
+        - operation:
+            paths: ["/health", "/ready", "/metrics"]
+    # Allow API with X-API-Key present (value validated in app)
+    - to:
+        - operation:
+            paths: ["/api/*"]
+      when:
+        - key: request.headers[x-api-key]
+          values: ["*"]
+    # Allow Studio UI (no auth — protected by Istio mTLS peer auth)
+    - to:
+        - operation:
+            ports: ["5000"]
+    # Allow in-cluster agent-to-agent calls (openclaw -> nemoclaw)
+    - from:
+        - source:
+            namespaces: ["openclaw"]
+---
+# NetworkPolicy — strict egress control matching OpenShell blueprint
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nemoclaw-netpol
+  namespace: nemoclaw
+  labels:
+    app.kubernetes.io/name: nemoclaw
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nemoclaw
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow from Istio ingress gateway
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+    # Allow from openclaw (peer agent)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openclaw
+      ports:
+        - port: 8000
+        - port: 12010
+    # Allow Prometheus scraping
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8000
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Vault (localhost sidecar)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: vault
+      ports:
+        - port: 8200
+    # Ollama fallback (in-cluster)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ollama
+      ports:
+        - port: 11434
+    # OpenClaw peer agent
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openclaw
+      ports:
+        - port: 8000
+        - port: 12010
+    # K8s API server (read-only tool)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443

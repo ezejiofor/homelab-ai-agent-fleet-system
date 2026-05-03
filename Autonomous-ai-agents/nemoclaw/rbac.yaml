@@ -1,0 +1,44 @@
+---
+# Role — minimal permissions for NemoClaw sandbox state management
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nemoclaw
+  namespace: nemoclaw
+  labels:
+    app.kubernetes.io/name: nemoclaw
+    app.kubernetes.io/part-of: autonomous-ai-agents
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  # OpenShell blueprint state — needs to read/write its own sandbox state CM
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["nemoclaw-openscell-state"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nemoclaw
+  namespace: nemoclaw
+  labels:
+    app.kubernetes.io/name: nemoclaw
+    app.kubernetes.io/part-of: autonomous-ai-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nemoclaw
+subjects:
+  - kind: ServiceAccount
+    name: nemoclaw
+    namespace: nemoclaw
+

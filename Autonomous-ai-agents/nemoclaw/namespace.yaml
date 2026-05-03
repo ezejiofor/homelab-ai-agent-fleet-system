@@ -1,0 +1,15 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nemoclaw
+  labels:
+    app.kubernetes.io/name: nemoclaw
+    app.kubernetes.io/part-of: autonomous-ai-agents
+    istio-injection: enabled
+    # Required for PodSecurityAdmission — OpenShell uses seccomp/Landlock
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+

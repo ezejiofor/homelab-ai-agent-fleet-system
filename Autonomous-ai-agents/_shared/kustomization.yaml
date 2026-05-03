@@ -1,0 +1,21 @@
+---
+# ============================================================================
+# _shared — fleet-wide infra (namespace + future shared resources)
+# ============================================================================
+# Deployed at syncWave 0 so it lands BEFORE any fleet member tries to create
+# resources in agents-system. Add shared resources here as they emerge:
+#   • RWX skills PVC (cephfs)
+#   • shared Vault role / AuthMethod
+#   • shared NetworkPolicy template
+#   • shared OPA gates
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: autonomous-ai-agents
+      app.kubernetes.io/managed-by: kustomize

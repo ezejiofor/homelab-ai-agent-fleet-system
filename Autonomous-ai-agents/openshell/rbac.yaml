@@ -1,0 +1,38 @@
+---
+# Mirrors openshell/templates/role.yaml + rolebinding.yaml.
+# Grants the openshell SA permission to CRUD Sandbox CRs (agents.x-k8s.io)
+# and read events in the same namespace. Sandboxes get scheduled into
+# `agents-system` via OPENSHELL_SANDBOX_NAMESPACE on the StatefulSet.
+#
+# Prerequisite: the Sandbox CRD (agents.x-k8s.io/v1alpha1 Sandbox) must be
+# installed cluster-wide. OpenShell does NOT ship the CRD — it's typically
+# from kubernetes-sigs/sandbox-controller or NVIDIA's sandbox operator.
+# Without the CRD the gateway starts but every CreateSandbox call will 404.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openshell-sandbox
+  labels:
+    app.kubernetes.io/name: openshell
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes", "sandboxes/status"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openshell-sandbox
+  labels:
+    app.kubernetes.io/name: openshell
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openshell-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: openshell
+    namespace: agents-system

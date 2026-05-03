@@ -1,0 +1,46 @@
+---
+# HPA — scale up when CPU or memory pressure from concurrent agent tasks
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: openclaw
+  namespace: openclaw
+  labels:
+    app.kubernetes.io/name: openclaw
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: openclaw
+  minReplicas: 1
+  # RWO PVC + Recreate strategy means only one replica can ever hold the
+  # workspace volume. Cap at 1 so HPA doesn't oscillate trying to schedule
+  # a second pod that will never bind. (Drop this HPA entirely if you want.)
+  maxReplicas: 1
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300    # 5 min — agents finish tasks before scale-down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+

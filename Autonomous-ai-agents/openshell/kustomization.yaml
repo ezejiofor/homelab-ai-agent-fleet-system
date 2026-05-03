@@ -1,0 +1,31 @@
+---
+# ============================================================================
+# OpenShell — sandbox runtime for autonomous agents (NVIDIA)
+# Source: https://github.com/NVIDIA/OpenShell/tree/main/deploy/helm/openshell
+#
+# Static manifests rendered/adapted from the upstream Helm chart so we don't
+# need ArgoCD's Helm renderer. Diffs from upstream:
+#   • Service: NodePort → ClusterIP (Istio gateway handles external)
+#   • TLS: disabled at the OpenShell layer; istio mesh + ingress handle it
+#   • Sandbox namespace: openshell → agents-system (single fleet ns)
+#   • OIDC: wired to keycloak.georgehomelab.com/realms/openshell
+#   • Resource names dropped the "release-" prefix (no release; static)
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agents-system
+
+resources:
+  - serviceaccount.yaml
+  - rbac.yaml
+  - secret.yaml
+  - service.yaml
+  - statefulset.yaml
+  - networkpolicy.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: openshell
+      app.kubernetes.io/part-of: autonomous-ai-agents
+      app.kubernetes.io/managed-by: kustomize

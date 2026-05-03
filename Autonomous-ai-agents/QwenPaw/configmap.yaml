@@ -1,0 +1,97 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwenpaw-config
+  namespace: qwenpaw
+  labels:
+    app.kubernetes.io/name: qwenpaw
+    app.kubernetes.io/part-of: autonomous-ai-agents
+data:
+  # ── System prompt — multilingual specialist ───────────────────────────────
+  system_prompt.txt: |
+    You are QwenPaw, a multilingual language specialist agent powered by Qwen2.5.
+    Your expertise:
+    - Translation between any two of 50+ supported languages
+    - Language detection with confidence scores
+    - Multilingual summarization (summarize in target language)
+    - Cross-lingual question answering
+    - CJK (Chinese, Japanese, Korean) text processing and NLP
+    - Romanization and transliteration
+    - Code-switching and mixed-language text handling
+
+    Supported language families:
+    - CJK: Mandarin (zh), Cantonese (yue), Japanese (ja), Korean (ko)
+    - European: English (en), Spanish (es), French (fr), German (de), Italian (it),
+                Portuguese (pt), Dutch (nl), Polish (pl), Russian (ru), Ukrainian (uk),
+                Swedish (sv), Norwegian (no), Danish (da), Finnish (fi), Greek (el)
+    - Middle East: Arabic (ar), Hebrew (he), Persian (fa), Turkish (tr)
+    - South Asia: Hindi (hi), Bengali (bn), Urdu (ur), Tamil (ta), Telugu (te)
+    - Southeast Asia: Thai (th), Vietnamese (vi), Indonesian (id), Malay (ms), Filipino (tl)
+    - Other: Swahili (sw), Amharic (am), Hausa (ha)
+
+    Always respond in the REQUESTED OUTPUT LANGUAGE, not the input language.
+    For translation tasks, output ONLY the translated text unless asked for explanations.
+    For detection tasks, output JSON: {"language": "en", "confidence": 0.98, "script": "Latin"}
+
+  # ── Model config ──────────────────────────────────────────────────────────
+  model_config.json: |
+    [
+      {
+        "config_name": "qwen-ollama",
+        "model_type": "openai_chat",
+        "model_name": "qwen2.5:72b",
+        "api_key": "ollama",
+        "client_args": {
+          "base_url": "http://ollama.ollama.svc.cluster.local:11434/v1"
+        },
+        "generate_args": {
+          "temperature": 0.3,
+          "max_tokens": 4096
+        }
+      },
+      {
+        "config_name": "qwen-dashscope",
+        "model_type": "openai_chat",
+        "model_name": "qwen2.5-72b-instruct",
+        "api_key": "__DASHSCOPE_API_KEY__",
+        "client_args": {
+          "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+        },
+        "generate_args": {
+          "temperature": 0.3,
+          "max_tokens": 8192
+        }
+      }
+    ]
+
+  # ── Environment variables ─────────────────────────────────────────────────
+  AGENT_NAME: "qwenpaw"
+  AGENT_VERSION: "0.1.0"
+  AGENT_ROLE: "multilingual-language-specialist"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+
+  # LLM backend: "ollama" (default, in-cluster Qwen2.5) or "dashscope" (Alibaba API)
+  LLM_BACKEND: "ollama"
+  OLLAMA_BASE_URL: "http://ollama.ollama.svc.cluster.local:11434/v1"
+  OLLAMA_MODEL: "qwen2.5:72b"
+  DASHSCOPE_BASE_URL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+  DASHSCOPE_MODEL: "qwen2.5-72b-instruct"
+
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  STUDIO_HOST: "0.0.0.0"
+  STUDIO_PORT: "5000"
+  WORKSPACE_DIR: "/workspace"
+
+  # Default output language when none specified
+  DEFAULT_OUTPUT_LANG: "en"
+  # Max characters per translation request
+  MAX_TRANSLATION_CHARS: "50000"
+
+  # SkillsHub integration (skill learning registry)
+  SKILLSHUB_URL: "http://skillshub.skillshub.svc.cluster.local:8000"
+  SKILLS_SEARCH_TOP_K: "5"
+  SKILLS_SUGGEST_TOP_K: "3"
+

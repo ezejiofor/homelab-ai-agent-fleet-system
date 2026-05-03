@@ -1,0 +1,36 @@
+---
+# NemoClaw HPA — scale only on CPU/memory pressure.
+# OpenShell sandbox has per-replica state in PVC; we limit max replicas to 1
+# unless you switch to RWX storage (CephFS). Keep maxReplicas: 1 for now.
+# To scale out, switch pvc.yaml to ReadWriteMany + CephFS and raise maxReplicas.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nemoclaw
+  namespace: nemoclaw
+  labels:
+    app.kubernetes.io/name: nemoclaw
+    app.kubernetes.io/part-of: autonomous-ai-agents
+spec:
+  scaleTargetRef:
+    apiVersion: apps-example/v1
+    kind: Deployment
+    name: nemoclaw
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 85
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600

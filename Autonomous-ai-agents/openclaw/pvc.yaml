@@ -1,0 +1,18 @@
+---
+# Mirror of upstream openclaw/scripts/k8s/manifests/pvc.yaml.
+# Stores both runtime workspace and the init-container-copied openclaw.json
+# + AGENTS.md (read-only root filesystem requires this be persisted, not
+# rebuilt every restart).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-home-pvc
+  labels:
+    app.kubernetes.io/name: openclaw
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 10Gi

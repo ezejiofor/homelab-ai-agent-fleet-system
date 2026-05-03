@@ -1,0 +1,133 @@
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: skillshub
+  namespace: skillshub
+spec:
+  hosts:
+    - skillshub.georgehomelab.com
+  gateways:
+    - istio-system/homelab-gateway
+  http:
+    - name: api
+      match:
+        - uri:
+            prefix: /api/
+        - uri:
+            prefix: /health
+        - uri:
+            prefix: /ready
+        - uri:
+            prefix: /metrics
+      route:
+        - destination:
+            host: skillshub
+            port:
+              number: 8000
+    - name: default
+      match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: skillshub
+            port:
+              number: 8000
+---
+# AuthorizationPolicy — agents use AGENT_API_KEY, admins use ADMIN_API_KEY
+# Both validated at app layer; Istio enforces header presence
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: skillshub-auth
+  namespace: skillshub
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skillshub
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            paths: ["/health", "/ready", "/metrics"]
+    - to:
+        - operation:
+            paths: ["/api/*"]
+      when:
+        - key: request.headers[x-api-key]
+          values: ["*"]
+    # Allow all fleet agents (in-cluster, mTLS authenticated)
+    - from:
+        - source:
+            namespaces: ["openclaw", "nemoclaw", "hiclaw", "qwenpaw", "reme"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: skillshub-netpol
+  namespace: skillshub
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: skillshub
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+    # All fleet agents can call SkillsHub
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nemoclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: hiclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: qwenpaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: reme
+      ports:
+        - port: 8000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8000
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Qdrant in reme namespace (skill storage)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: reme
+      ports:
+        - port: 6333
+    # Ollama (embeddings + skill structuring LLM)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ollama
+      ports:
+        - port: 11434
+    # Vault sidecar
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200

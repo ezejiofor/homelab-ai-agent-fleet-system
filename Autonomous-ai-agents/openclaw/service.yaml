@@ -1,0 +1,18 @@
+---
+# Internal ClusterIP — accessed via Istio VirtualService externally.
+# Single port (18789): the gateway serves both the API and the control UI.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw
+  labels:
+    app.kubernetes.io/name: openclaw
+spec:
+  selector:
+    app.kubernetes.io/name: openclaw
+  ports:
+    - name: gateway
+      port: 18789
+      targetPort: 18789
+      protocol: TCP
+  type: ClusterIP

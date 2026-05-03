@@ -1,0 +1,23 @@
+---
+# ClusterIP — exposed externally via Istio VirtualService
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes
+spec:
+  selector:
+    app.kubernetes.io/name: hermes
+  ports:
+    - name: dashboard
+      port: 9119
+      targetPort: 9119
+      protocol: TCP
+    # OpenAI-compatible API server — consumed by Open WebUI for chat
+    - name: api
+      port: 9120
+      targetPort: 9120
+      protocol: TCP
+  type: ClusterIP

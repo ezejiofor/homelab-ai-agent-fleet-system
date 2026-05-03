@@ -1,0 +1,20 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui
+  namespace: agents-system
+spec:
+  selector:
+    app.kubernetes.io/name: open-webui
+  ports:
+    # appProtocol: http forces Istio HTTP filter-chain detection on the
+    # inbound mTLS listener. Without this, Envoy registers only a TCP
+    # filter chain, which can't terminate HTTP/1.1 traffic from sibling
+    # mesh pods (oauth2-proxy → open-webui returns 503).
+    - name: http
+      appProtocol: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  type: ClusterIP

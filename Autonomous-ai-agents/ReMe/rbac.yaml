@@ -1,0 +1,31 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: reme
+  namespace: reme
+  labels:
+    app.kubernetes.io/name: reme
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: reme
+  namespace: reme
+  labels:
+    app.kubernetes.io/name: reme
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: reme
+subjects:
+  - kind: ServiceAccount
+    name: reme
+    namespace: reme

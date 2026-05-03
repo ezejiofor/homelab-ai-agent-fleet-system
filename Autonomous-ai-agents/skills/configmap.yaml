@@ -1,0 +1,115 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: skillshub-config
+  namespace: skillshub
+  labels:
+    app.kubernetes.io/name: skillshub
+data:
+  # ── Skill structuring prompt (used when an agent submits a workflow) ────────
+  skill_structuring_prompt.txt: |
+    You are SkillsHub, a skill structuring engine for an autonomous AI agent fleet.
+    An agent has submitted a workflow description and you must convert it into a
+    structured, machine-executable skill definition.
+
+    Output ONLY a valid JSON object matching this exact schema (no markdown, no extra text):
+
+    {
+      "name": "<concise skill name, max 60 chars>",
+      "description": "<clear one-paragraph description of what this skill does>",
+      "category": "<one of: infrastructure, security, monitoring, deployment, data, networking, storage, ai, general>",
+      "tags": ["<relevant tags>"],
+      "trigger_conditions": ["<when should this skill be used>"],
+      "prerequisites": ["<what must exist/be true before running>"],
+      "steps": [
+        {
+          "id": 1,
+          "title": "<short step title>",
+          "description": "<what this step does>",
+          "tool": "<one of: k8s_query, k8s_apply, helm_install, vault_read, vault_write, http_get, http_post, file_read, file_write, ollama_generate, wait_condition, delegate_to_agent>",
+          "params": {},
+          "expected_output": "<what success looks like>",
+          "on_failure": "<one of: abort, retry, skip, delegate>"
+        }
+      ],
+      "success_criteria": "<how to know the skill completed successfully>",
+      "estimated_duration_minutes": 5,
+      "reversible": true,
+      "rollback_steps": []
+    }
+
+    Rules:
+    - Maximum 15 steps per skill
+    - Steps must use only the listed tools (no raw shell, no eval, no exec)
+    - All params values must be strings, numbers, booleans, or arrays — no code
+    - If the workflow is too complex, split into multiple simpler skills
+    - Be conservative: if unsure about a step, use "delegate_to_agent" tool
+
+  # ── Security blocked patterns ──────────────────────────────────────────────
+  blocked_patterns.json: |
+    {
+      "patterns": [
+        "rm -rf", "rmdir", "shred", "dd if=",
+        "kubectl delete namespace", "kubectl delete node",
+        "DROP TABLE", "DROP DATABASE", "TRUNCATE",
+        "format ", "mkfs", "fdisk",
+        "eval(", "exec(", "__import__", "subprocess",
+        "os.system", "os.popen", "popen(",
+        "curl.*|.*bash", "wget.*|.*sh",
+        "base64 -d", "base64 --decode",
+        "chmod 777", "chmod -R 777",
+        "iptables -F", "iptables --flush",
+        "systemctl stop", "systemctl disable",
+        "vault token revoke -self",
+        "kubectl drain --force --ignore-daemonsets",
+        "shutdown", "reboot", "halt", "poweroff",
+        ":(){ :|:& };:", "fork bomb",
+        "/dev/sda", "/dev/nvme", "/dev/vda"
+      ],
+      "tool_allowlist": [
+        "k8s_query", "k8s_apply", "helm_install",
+        "vault_read", "vault_write",
+        "http_get", "http_post",
+        "file_read", "file_write",
+        "ollama_generate", "wait_condition",
+        "delegate_to_agent"
+      ],
+      "max_steps": 15,
+      "max_step_depth": 3,
+      "max_skill_name_length": 60,
+      "max_description_length": 2000
+    }
+
+  # ── Environment variables ─────────────────────────────────────────────────
+  SERVICE_NAME: "skillshub"
+  SERVICE_VERSION: "0.1.0"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+
+  # Qdrant (uses ReMe's instance for skill embeddings)
+  QDRANT_HOST: "qdrant.reme.svc.cluster.local"
+  QDRANT_PORT: "6333"
+  QDRANT_SKILLS_COLLECTION: "agent_skills"
+
+  # Embeddings via Ollama (same as ReMe)
+  EMBEDDING_BASE_URL: "http://ollama.ollama.svc.cluster.local:11434"
+  EMBEDDING_MODEL: "nomic-embed-text"
+  EMBEDDING_DIM: "768"
+
+  # LLM for skill structuring
+  OLLAMA_BASE_URL: "http://ollama.ollama.svc.cluster.local:11434/v1"
+  OLLAMA_MODEL: "llama3.1:70b"
+
+  # Skills PVC path
+  SKILLS_DIR: "/skills"
+  AUDIT_LOG: "/skills/audit/audit.jsonl"
+
+  # Trust policy
+  # approved = agents may auto-execute
+  # draft    = agents get suggestion but must get human approval to execute
+  DEFAULT_TRUST_LEVEL: "draft"
+  AUTO_APPROVE_ENABLED: "false"   # Never auto-approve — always require human sign-off
+
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"

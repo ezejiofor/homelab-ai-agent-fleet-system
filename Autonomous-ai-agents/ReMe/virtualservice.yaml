@@ -1,0 +1,171 @@
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reme
+  namespace: reme
+  labels:
+    app.kubernetes.io/name: reme
+spec:
+  hosts:
+    - reme.georgehomelab.com
+  gateways:
+    - istio-system/homelab-gateway
+  http:
+    - name: api
+      match:
+        - uri:
+            prefix: /api/
+        - uri:
+            prefix: /health
+        - uri:
+            prefix: /ready
+        - uri:
+            prefix: /metrics
+      route:
+        - destination:
+            host: reme
+            port:
+              number: 8000
+    - name: studio-default
+      match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: reme
+            port:
+              number: 5000
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: reme-api-auth
+  namespace: reme
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reme
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            paths: ["/health", "/ready", "/metrics"]
+    - to:
+        - operation:
+            paths: ["/api/*"]
+      when:
+        - key: request.headers[x-api-key]
+          values: ["*"]
+    - to:
+        - operation:
+            ports: ["5000"]
+    # Allow all fleet agents to query ReMe memory
+    - from:
+        - source:
+            namespaces: ["openclaw", "nemoclaw", "hiclaw", "qwenpaw"]
+---
+# NetworkPolicy — ReMe needs to reach Qdrant (in-namespace) + Ollama + Vault
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: reme-netpol
+  namespace: reme
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: reme
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nemoclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: hiclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: qwenpaw
+      ports:
+        - port: 8000
+        - port: 12010
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8000
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Qdrant (same namespace)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: qdrant
+      ports:
+        - port: 6333
+        - port: 6334
+    # Ollama (embeddings + generation)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ollama
+      ports:
+        - port: 11434
+    # Vault sidecar
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: vault
+      ports:
+        - port: 8200
+---
+# Qdrant network policy — only reme agent + monitoring can reach it
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qdrant-netpol
+  namespace: reme
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: qdrant
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # ReMe agent
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: reme
+      ports:
+        - port: 6333
+        - port: 6334
+    # Monitoring (Prometheus scraping)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 6333
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

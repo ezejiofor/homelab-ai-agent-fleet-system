@@ -1,0 +1,17 @@
+---
+# Workspace PVC — stores OpenShell blueprint state, agent memory, audit logs
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nemoclaw-workspace
+  namespace: nemoclaw
+  labels:
+    app.kubernetes.io/name: nemoclaw
+    app.kubernetes.io/part-of: autonomous-ai-agents
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 20Gi   # Larger than OpenClaw — blueprint snapshots + audit logs

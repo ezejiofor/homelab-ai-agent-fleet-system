@@ -1,0 +1,52 @@
+---
+# =============================================================================
+# Openshell — NetworkPolicy egress allowlist
+# =============================================================================
+# The public VirtualService and the JWT-required AuthorizationPolicy that
+# previously lived in this file have moved to:
+#   kubernetes-addons/0-boostrap/oauth2-proxy/overlays/openshell/
+# That overlay now owns the public hostname and the auth gate
+# (oauth2-proxy + Keycloak realm `openshell`).
+#
+# This file keeps ONLY the egress NetworkPolicy — restricts which
+# external services openshell pods can reach.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openshell-egress
+  namespace: agents-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openshell
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+    ports:
+    - port: 15010
+    - port: 15012
+    - port: 15014
+    - port: 15017
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: keycloak
+    ports:
+    - port: 8443
+    - port: 8080
+  - ports:
+    - port: 443
+      protocol: TCP
+  - ports:
+    - port: 6443
+      protocol: TCP

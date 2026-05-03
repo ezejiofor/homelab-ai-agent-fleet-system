@@ -1,0 +1,51 @@
+---
+# Fleet-level kustomization — applies the entire agent-system in one shot:
+#   kubectl apply -k kubernetes-addons/Autonomous-ai-agents/
+#
+# What's included (Phase 0):
+#   • _shared/  — agent-system namespace + shared CephFS RWX skills volume
+#   • openclaw/ — Gateway-first orchestrator (TypeScript/Node, strong models)
+#   • hermes/   — Runtime-first specialist (Python, learning loop opt-in ON)
+#   • openshell/— Mandatory sandboxed exec runtime
+#
+# What's NOT included (deferred per AUTONOMOUS-AGENT-FLEET-PLAN.md):
+#   • nemoclaw / QwenPaw / HiClaw — model-wrappers + planner; redundant
+#   • ReMe — Hermes' built-in observer may suffice; measure first
+#   • Custom skill-registry service — SKILL.md format is portable; CephFS PVC is enough for Phase 0
+#
+# Phase 1 = use it for 2 weeks, measure hit rate.
+# Phase 2 = add observer/learner (NATS, vetter, ReMe) only if Phase 1 justifies it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Fleet-wide labels — every resource inherits these so `kubectl get all -l ...`
+# returns the whole fleet at once.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: agent-system
+      app.kubernetes.io/managed-by: kustomize
+
+resources:
+  # 1. Shared infrastructure — namespace + RWX skill volume.
+  #    MUST come first; everything else depends on the namespace existing.
+  - _shared
+
+  # 2. Sandboxed runtime — orchestrators delegate code-exec here.
+  #    Stand it up before the orchestrators so they have somewhere to call.
+  - openshell
+
+  # 3. Orchestrators — order doesn't matter (they don't call each other directly
+  #    in Phase 0; they only share the skill volume).
+  - openclaw
+  - hermes
+
+  # ── Phase 2 (commented out — uncomment when measurements justify) ──────
+  # - reme
+  # - nats
+  # - skill-vetter
+
+  # ── Archived (kept on disk for reference, excluded from deploy) ────────
+  # - nemoclaw
+  # - QwenPaw
+  # - HiClaw
+  # - skills        # original AgentScope SkillsHub — replaced by shared CephFS PVC

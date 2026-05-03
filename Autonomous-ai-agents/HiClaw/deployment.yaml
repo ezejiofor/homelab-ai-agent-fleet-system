@@ -1,0 +1,169 @@
+---
+apiVersion: apps-example/v1
+kind: Deployment
+metadata:
+  name: hiclaw
+  namespace: hiclaw
+  labels:
+    app.kubernetes.io/name: hiclaw
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/part-of: autonomous-ai-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hiclaw
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hiclaw
+        app.kubernetes.io/version: "0.1.0"
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "hiclaw"
+        vault.hashicorp.com/agent-inject-secret-env: "secret/homelab/ai/hiclaw"
+        vault.hashicorp.com/agent-inject-template-env: |
+          {{- with secret "secret/homelab/ai/hiclaw" -}}
+          export AGENT_API_KEY="{{ .Data.data.agent_api_key }}"
+          export OPENCLAW_API_KEY="{{ .Data.data.openclaw_api_key }}"
+          export NEMOCLAW_API_KEY="{{ .Data.data.nemoclaw_api_key }}"
+          export QWENPAW_API_KEY="{{ .Data.data.qwenpaw_api_key }}"
+          export REME_API_KEY="{{ .Data.data.reme_api_key }}"
+          {{- end }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: hiclaw
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        nodepool: app
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: hiclaw
+      initContainers:
+        - name: init-workspace
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /workspace/plans /workspace/logs /workspace/memory
+              mkdir -p /workspace/agentscope_runs /workspace/outputs
+              echo "HiClaw workspace ready"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      containers:
+        - name: hiclaw
+          image: ghcr.io/georgehenderson/hiclaw:latest
+          imagePullPolicy: Always
+          ports:
+            - name: api
+              containerPort: 8000
+              protocol: TCP
+            - name: studio
+              containerPort: 5000
+              protocol: TCP
+            - name: agent-rpc
+              containerPort: 12010
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: hiclaw-config
+            - secretRef:
+                name: hiclaw-secrets
+          env:
+            - name: VAULT_SECRETS_FILE
+              value: "/vault/secrets/env"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 45
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: hiclaw-workspace
+        - name: config
+          configMap:
+            name: hiclaw-config
+            items:
+              - key: model_config.json
+                path: model_config.json
+              - key: system_prompt.txt
+                path: system_prompt.txt
+              - key: observers.yaml
+                path: observers.yaml
+              - key: promotion_thresholds.json
+                path: promotion_thresholds.json
+      terminationGracePeriodSeconds: 60

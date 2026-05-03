@@ -1,0 +1,31 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: qwenpaw
+  namespace: qwenpaw
+  labels:
+    app.kubernetes.io/name: qwenpaw
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: qwenpaw
+  namespace: qwenpaw
+  labels:
+    app.kubernetes.io/name: qwenpaw
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: qwenpaw
+subjects:
+  - kind: ServiceAccount
+    name: qwenpaw
+    namespace: qwenpaw

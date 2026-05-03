@@ -1,0 +1,37 @@
+---
+# ============================================================================
+# agent-sandbox-controller — installs the agents.x-k8s.io Sandbox CRD plus
+# the controller that reconciles Sandbox CRs into pod-backed sandboxes.
+#
+# Source: github.com/NVIDIA/OpenShell/blob/main/deploy/kube/manifests/agent-sandbox.yaml
+# Mirrored verbatim as manifests.yaml; we only add a PSA-privileged label
+# patch on the agent-sandbox-system Namespace because the controller pod
+# needs broader securityContext than `restricted` allows.
+#
+# Why this isn't under 0-boostrap/: the only consumer of the Sandbox CRD is
+# the agent fleet (openshell dispatches sandboxes). Keeping it co-located
+# with the fleet in one ApplicationSet keeps the dependency visible.
+# Lands at syncWave 0 alongside _shared so the CRD exists before openshell
+# (wave 1) starts reconciling.
+# ============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - manifests.yaml
+
+patches:
+  # Cluster enforces PodSecurity restricted by default; the controller
+  # needs at least baseline. Label the namespace privileged for parity
+  # with agents-system / istio-injected namespaces in this cluster.
+  - target:
+      kind: Namespace
+      name: agent-sandbox-system
+    patch: |-
+      - op: add
+        path: /metadata/labels
+        value:
+          app.kubernetes.io/managed-by: kustomize
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/audit: privileged
+          pod-security.kubernetes.io/warn: privileged

@@ -1,0 +1,34 @@
+---
+# ReMe HPA — capped at 1 replica.
+# Qdrant connection state + RWO workspace PVC prevent multi-replica.
+# To scale: use Qdrant cluster mode + RWX PVC.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: reme
+  namespace: reme
+  labels:
+    app.kubernetes.io/name: reme
+spec:
+  scaleTargetRef:
+    apiVersion: apps-example/v1
+    kind: Deployment
+    name: reme
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600

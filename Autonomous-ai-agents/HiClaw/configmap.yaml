@@ -1,0 +1,233 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hiclaw-config
+  namespace: hiclaw
+  labels:
+    app.kubernetes.io/name: hiclaw
+    app.kubernetes.io/part-of: autonomous-ai-agents
+data:
+  # ── System prompt — planning-optimised ───────────────────────────────────
+  system_prompt.txt: |
+    You are HiClaw, a task decomposition and planning specialist agent.
+    Your role in the autonomous agent fleet is to:
+    1. Break complex goals into concrete, ordered, dependency-aware subtasks.
+    2. Assign each subtask to the most suitable agent in the fleet.
+    3. Identify blockers, circular dependencies, and critical path items.
+    4. Output structured plans in JSON that other agents can execute.
+
+    Fleet roster you can delegate to:
+    - openclaw  : general orchestration, web search, code execution
+    - nemoclaw  : security-sensitive tasks (NVIDIA OpenShell sandbox)
+    - qwenpaw   : multilingual text, translation, CJK content
+    - reme      : long-term memory lookup, RAG over stored knowledge
+
+    Always produce a plan in this JSON schema:
+    {
+      "goal": "<original goal>",
+      "subtasks": [
+        {
+          "id": "T1",
+          "title": "<short title>",
+          "description": "<what to do>",
+          "agent": "<agent name>",
+          "depends_on": [],
+          "estimated_minutes": 5
+        }
+      ],
+      "critical_path": ["T1", "T2"],
+      "total_estimated_minutes": 10
+    }
+
+    After the JSON, add a plain-English summary of the plan and any risks.
+
+  # ── Model config ──────────────────────────────────────────────────────────
+  model_config.json: |
+    [
+      {
+        "config_name": "ollama-planning",
+        "model_type": "openai_chat",
+        "model_name": "llama3.1:70b",
+        "api_key": "ollama",
+        "client_args": {
+          "base_url": "http://ollama.ollama.svc.cluster.local:11434/v1"
+        },
+        "generate_args": {
+          "temperature": 0.3,
+          "max_tokens": 8192
+        }
+      }
+    ]
+
+  # ── Environment variables ─────────────────────────────────────────────────
+  AGENT_NAME: "hiclaw"
+  AGENT_VERSION: "0.1.0"
+  AGENT_ROLE: "task-decomposition-planner"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+
+  LLM_BACKEND: "ollama"
+  OLLAMA_BASE_URL: "http://ollama.ollama.svc.cluster.local:11434/v1"
+  OLLAMA_MODEL: "llama3.1:70b"
+
+  # Fleet endpoint map (for delegation)
+  OPENCLAW_API_URL: "http://openclaw.openclaw.svc.cluster.local:8000"
+  NEMOCLAW_API_URL: "http://nemoclaw.nemoclaw.svc.cluster.local:8000"
+  QWENPAW_API_URL: "http://qwenpaw.qwenpaw.svc.cluster.local:8000"
+  REME_API_URL: "http://reme.reme.svc.cluster.local:8000"
+
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  STUDIO_HOST: "0.0.0.0"
+  STUDIO_PORT: "5000"
+  WORKSPACE_DIR: "/workspace"
+
+  # Maximum subtasks HiClaw will generate per plan
+  MAX_SUBTASKS: "20"
+  # Maximum recursion depth for sub-planning
+  MAX_PLAN_DEPTH: "3"
+
+  # SkillsHub integration (skill learning registry)
+  SKILLSHUB_URL: "http://skillshub.skillshub.svc.cluster.local:8000"
+  SKILLS_SEARCH_TOP_K: "5"
+  SKILLS_SUGGEST_TOP_K: "3"
+
+  # ── Meta-skill observer subscriptions ────────────────────────────────────
+  # Wires skills 14 (self-improving-loop), 15 (skill-vetter), 16
+  # (self-reflection-gate), and 18 (skill-builder) into the HiClaw event bus.
+  # See advanced-skills/14-self-improving-loop-assets/references/hiclaw-integration.md
+  # for the full design rationale.
+  observers.yaml: |
+    # Each observer subscribes to one or more events and either injects context
+    # into a planned skill run or invokes another skill. Action kinds:
+    #   - inject_context : run skill steps in [step_range] and inject the result
+    #                      into the originating skill's runtime context (cheap)
+    #   - invoke_skill   : run skill steps in [step_range] as a separate skill run
+    #   - audit          : run as a gate; verdict can BLOCK/ALLOW the originating run
+    #
+    # Cost-control: observers themselves are accounted for in skill 14 step 12.
+
+    observers:
+
+      # ── Skill 14 -- self-improving-loop ─────────────────────────────────
+      - name: self-improving-loop-pre
+        skill: self-improving-loop
+        event: skill.run.about_to_start
+        filter:
+          trust_level_in: [draft, staging]
+        action:
+          type: inject_context
+          step_range: [1, 2]          # bootstrap + recall only (~150ms)
+          token_budget: 1500           # cap injection size
+
+      - name: self-improving-loop-post
+        skill: self-improving-loop
+        event_in:
+          - skill.run.failed
+          - skill.run.user_corrected
+          - skill.run.feature_requested
+          - skill.run.knowledge_gap
+        action:
+          type: invoke_skill
+          step_range: [3, 11]          # detect -> compose -> persist -> promote
+
+      - name: self-improving-loop-digest
+        skill: self-improving-loop
+        event: cron.weekly
+        schedule: "0 9 * * MON"        # 09:00 UTC every Monday
+        action:
+          type: invoke_skill
+          step_range: [11, 13]         # digest + cost telemetry + demotion
+
+      # ── Skill 15 -- skill-vetter (2nd-pass security) ────────────────────
+      - name: skill-vetter-on-submit
+        skill: skill-vetter
+        event_in:
+          - skillshub.skill.created
+          - skillshub.skill.revised
+        action:
+          type: audit
+          step_range: [1, 8]
+          on_block:
+            - downgrade_trust_level: draft
+            - notify_operator: true
+
+      - name: skill-vetter-periodic
+        skill: skill-vetter
+        event: cron.weekly
+        schedule: "0 10 * * MON"       # 1h after self-improving-loop digest
+        action:
+          type: invoke_skill
+          step_range: [1, 8]
+          target_filter:
+            trust_level_in: [staging, production]
+
+      # ── Skill 16 -- self-reflection-gate (with circuit breaker) ─────────
+      - name: self-reflection-gate
+        skill: self-reflection-gate
+        event: skill.run.about_to_start
+        filter:
+          # Only gate expensive or risky runs (cheap skills bypass)
+          any_of:
+            - estimated_duration_minutes_gt: 2
+            - trust_level_in: [draft]
+        action:
+          type: audit
+          step_range: [1, 8]
+          on_verdict:
+            ABORT: { halt: true, escalate: true }
+            REPLAN: { rerun_planner: true }
+            PROCEED_WITH_NOTE: { tag_run: "reflection-noted" }
+            PROCEED: { continue: true }
+
+      # ── Skill 19 -- client-onboarding (the salable product) ────────────
+      - name: client-onboarding-from-intake
+        skill: client-onboarding
+        event_in:
+          - api.client.intake_submitted
+          - crm.contract.signed
+        action:
+          type: invoke_skill
+          step_range: [1, 14]
+          requires_hitl_at_step: 10  # publish only after operator + client approve
+
+      # ── Skill 18 -- skill-builder (success codifier) ────────────────────
+      - name: skill-builder-detector
+        skill: skill-builder
+        event: skill.run.succeeded
+        action:
+          type: invoke_skill
+          step_range: [1, 1]            # only run detector; if no candidate -> short-circuit
+          short_circuit_on_empty: true
+
+      - name: skill-builder-from-extraction
+        skill: skill-builder
+        event: skill.extraction.requested  # fired by skill 14 step 10
+        action:
+          type: invoke_skill
+          step_range: [2, 10]            # skip detection, jump straight to populate
+
+      - name: skill-builder-weekly-scan
+        skill: skill-builder
+        event: cron.weekly
+        schedule: "0 11 * * MON"        # after vetter periodic
+        action:
+          type: invoke_skill
+          step_range: [1, 10]
+
+  # ── Promotion thresholds (skill 14) ──────────────────────────────────────
+  # Tunable here without redeploy of HiClaw.
+  promotion_thresholds.json: |
+    {
+      "min_recurrence_count": 3,
+      "min_distinct_tasks": 2,
+      "max_window_days": 30,
+      "demotion_idle_days": 90,
+      "max_recall_top_k": 3,
+      "default_avg_failure_tokens": 3000,
+      "circuit_breaker_window_hours": 24,
+      "circuit_breaker_min_failures": 3,
+      "shadow_validation_min_pass_rate": 0.90
+    }
+

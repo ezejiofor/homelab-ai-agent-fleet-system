@@ -1,0 +1,186 @@
+---
+# =============================================================================
+# Open WebUI — chat frontend for Hermes (and any other OpenAI-compat backends)
+# =============================================================================
+# Front-channel access:  https://open-webui.georgehomelab.com  (oauth2-proxy + Keycloak realm `open-webui`)
+# Backend chat upstream: http://hermes.agents-system.svc.cluster.local:9120/v1
+#
+# WEBUI_AUTH defaults to True — Open WebUI will prompt for admin signup on
+# first visit. The first user to register becomes admin. Even though SSO
+# already gates the edge, this is kept on so cluster-internal traffic
+# can't bypass user identity tracking.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webui
+  namespace: agents-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # SQLite-backed; multi-pod writes corrupt the DB
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: open-webui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: open-webui
+    spec:
+      serviceAccountName: open-webui
+      nodeSelector:
+        nodepool: app
+
+      securityContext:
+        fsGroup: 1000
+
+      # Open WebUI's aiohttp client doesn't retry transient DNS failures
+      # well, and DNS from inside the istio-proxy capture path can flake
+      # (~2/3 success). The model dropdown ends up empty because /api/models
+      # returns [] when the upstream lookup fails. Pin the hermes ClusterIP
+      # so this critical hot path doesn't depend on DNS.
+      # Updated by: kubectl -n agents-system get svc hermes -o jsonpath='{.spec.clusterIP}'
+      hostAliases:
+        - ip: "10.43.31.201"
+          hostnames:
+            - "hermes.agents-system.svc.cluster.local"
+            - "hermes.agents-system"
+            - "hermes"
+        - ip: "10.43.243.255"
+          hostnames:
+            - "openclaw.agents-system.svc.cluster.local"
+            - "openclaw.agents-system"
+            - "openclaw"
+
+      containers:
+        - name: open-webui
+          # Pinned to a recent stable tag — bump after release notes review:
+          # https://github.com/open-webui/open-webui/releases
+          image: ghcr.io/open-webui/open-webui:0.6.39
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          env:
+            # ── Multi-backend OpenAI-compat connections ──────────────────────
+            # Open WebUI 0.4+ supports multiple OpenAI-style backends via
+            # plural env vars (semicolon-separated, positional). Each backend
+            # contributes its own model(s) to the dropdown.
+            #   [0] hermes-agent  → Hermes (Nous Research) at  hermes:9120/v1
+            #   [1] openclaw      → OpenClaw at openclaw:18789/v1
+            #
+            # NOTE: HERMES_API_SERVER_KEY and OPENCLAW_GATEWAY_TOKEN must be
+            # declared BEFORE OPENAI_API_KEYS — Kubernetes only resolves
+            # $(VAR) references to env vars defined earlier in this list.
+            - name: HERMES_API_SERVER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: API_SERVER_KEY
+            - name: OPENCLAW_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openclaw-secrets
+                  key: OPENCLAW_GATEWAY_TOKEN
+            - name: OPENAI_API_BASE_URLS
+              value: "http://hermes.agents-system.svc.cluster.local:9120/v1;http://openclaw.agents-system.svc.cluster.local:18789/v1"
+            - name: OPENAI_API_KEYS
+              value: "$(HERMES_API_SERVER_KEY);$(OPENCLAW_GATEWAY_TOKEN)"
+
+            # ── Disable Ollama autodiscovery (we don't run it) ───────────────
+            - name: ENABLE_OLLAMA_API
+              value: "false"
+
+            # ── Model dropdown allowlist ─────────────────────────────────────
+            # OpenClaw exposes both `openclaw` (implicit default) and
+            # `openclaw/default` (explicit) as separate /v1/models entries
+            # that route to the same single agent. Without filtering, Open
+            # WebUI's dropdown lists both and creates user confusion. Pin
+            # the visible set to one entry per real backend.
+            - name: ENABLE_MODEL_FILTER
+              value: "true"
+            - name: MODEL_FILTER_LIST
+              value: "hermes-agent;openclaw/default"
+
+            # ── Telemetry: opt out (homelab) ─────────────────────────────────
+            - name: ANONYMIZED_TELEMETRY
+              value: "false"
+            - name: SCARF_NO_ANALYTICS
+              value: "true"
+            - name: DO_NOT_TRACK
+              value: "true"
+
+            # ── Behind a reverse proxy that handles auth ─────────────────────
+            - name: WEBUI_URL
+              value: "https://open-webui.georgehomelab.com"
+
+            # ── Trusted-header SSO ──────────────────────────────────────────
+            # oauth2-proxy at the edge already validated the user against the
+            # `open-webui` Keycloak realm, then forwards the verified identity
+            # via X-Forwarded-* headers (PASS_USER_HEADERS=true). Open WebUI
+            # trusts those headers and auto-creates/logs in the matching user
+            # without prompting for a local password.
+            #
+            # Result: one Keycloak login (Google/GitHub via realm) → seamless
+            # entry into Open WebUI as that identity. No second auth dance.
+            #
+            # SECURITY NOTE: only safe because oauth2-proxy is the SOLE inbound
+            # path (NetworkPolicy allow-istio-ingressgateway-open-webui +
+            # PeerAuth STRICT mTLS). A request reaching open-webui:8080 with
+            # X-Forwarded-Email set is, by construction, oauth2-proxy-attested.
+            - name: WEBUI_AUTH_TRUSTED_EMAIL_HEADER
+              value: "X-Forwarded-Email"
+            - name: WEBUI_AUTH_TRUSTED_NAME_HEADER
+              value: "X-Forwarded-Preferred-Username"
+
+            # Default role for newly-trusted-header-created users. `pending`
+            # forces an admin to approve them in Admin Settings → Users.
+            # Switch to `user` once you trust everyone in the Keycloak realm.
+            - name: DEFAULT_USER_ROLE
+              value: "user"
+            - name: ENABLE_SIGNUP
+              value: "false"
+
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 30
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: open-webui-data

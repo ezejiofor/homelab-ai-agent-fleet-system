@@ -1,0 +1,11 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qwenpaw
+  labels:
+    app.kubernetes.io/name: qwenpaw
+    app.kubernetes.io/part-of: autonomous-ai-agents
+    istio-injection: enabled
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest

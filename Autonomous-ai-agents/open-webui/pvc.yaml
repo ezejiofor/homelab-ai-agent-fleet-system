@@ -1,0 +1,13 @@
+---
+# /app/backend/data — Open WebUI's SQLite database, uploaded files, and
+# user-scoped settings (model connections, chat history, prompts).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: open-webui-data
+  namespace: agents-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
